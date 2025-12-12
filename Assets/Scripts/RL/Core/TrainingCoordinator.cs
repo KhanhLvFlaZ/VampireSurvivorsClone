@@ -24,6 +24,8 @@ namespace Vampire.RL
         [Header("Performance Monitoring")]
         [SerializeField] private int maxAgentsPerFrame = 10; // Limit agents updated per frame
         [SerializeField] private bool adaptiveProcessing = true; // Adjust processing based on performance
+        [SerializeField] private bool enablePerformanceThrottling = true; // Enable performance-based throttling
+        [SerializeField] private float performanceThrottleThreshold = 0.8f; // Throttle at 80% of frame budget
         
         [Header("State Preservation")]
         [SerializeField] private float autoSaveInterval = 30f; // Auto-save every 30 seconds
@@ -34,6 +36,7 @@ namespace Vampire.RL
         private IBehaviorProfileManager profileManager;
         private MonsterCoordinationSystem coordinationSystem;
         private MultiAgentLearningManager multiAgentManager;
+        private PerformanceMonitor performanceMonitor;
         
         // Agent management
         private Dictionary<ILearningAgent, MonsterType> registeredAgents;
@@ -45,6 +48,8 @@ namespace Vampire.RL
         private float currentFrameTime;
         private float lastAutoSaveTime;
         private int currentAgentIndex; // For round-robin processing
+        private int adaptiveBatchSize; // Current adaptive batch size
+        private float performanceScore; // Current performance score
         
         // State preservation
         private TrainingState currentTrainingState;
@@ -81,6 +86,15 @@ namespace Vampire.RL
             multiAgentGO.transform.SetParent(transform);
             this.multiAgentManager = multiAgentGO.AddComponent<MultiAgentLearningManager>();
             
+            // Initialize performance monitor
+            var performanceGO = new GameObject("PerformanceMonitor");
+            performanceGO.transform.SetParent(transform);
+            this.performanceMonitor = performanceGO.AddComponent<PerformanceMonitor>();
+            
+            // Subscribe to performance events
+            this.performanceMonitor.OnBatchSizeChanged += OnAdaptiveBatchSizeChanged;
+            this.performanceMonitor.OnDegradationLevelChanged += OnPerformanceDegradationChanged;
+            
             // Initialize state preservation
             InitializeStatePreservation();
             
@@ -88,6 +102,7 @@ namespace Vampire.RL
             this.lastUpdateTime = Time.time;
             this.lastAutoSaveTime = Time.time;
             this.currentAgentIndex = 0;
+            this.adaptiveBatchSize = 32; // Default batch size
             
             // Load previous training state if available
             LoadTrainingState();
@@ -306,9 +321,22 @@ namespace Vampire.RL
             lastUpdateTime = Time.time;
 
             // Adaptive processing: limit agents processed per frame
-            int agentsToProcess = adaptiveProcessing ? 
+            int baseAgentsToProcess = adaptiveProcessing ? 
                 Mathf.Min(maxAgentsPerFrame, registeredAgents.Count) : 
                 registeredAgents.Count;
+            
+            // Apply performance throttling if enabled
+            int agentsToProcess = baseAgentsToProcess;
+            if (enablePerformanceThrottling && performanceMonitor != null)
+            {
+                float performanceRatio = performanceMonitor.AverageFrameTime / maxFrameTimeMs;
+                if (performanceRatio > performanceThrottleThreshold)
+                {
+                    // Reduce agents processed based on performance
+                    float throttleFactor = Mathf.Clamp01(2f - performanceRatio);
+                    agentsToProcess = Mathf.Max(1, Mathf.RoundToInt(baseAgentsToProcess * throttleFactor));
+                }
+            }
 
             // Process agents in round-robin fashion for fairness
             var agentList = registeredAgents.Keys.ToList();
@@ -346,6 +374,14 @@ namespace Vampire.RL
             
             // Calculate frame time
             currentFrameTime = (Time.realtimeSinceStartup - startTime) * 1000f;
+            
+            // Update performance monitor with current metrics
+            if (performanceMonitor != null)
+            {
+                float memoryUsage = GetEstimatedMemoryUsageMB();
+                performanceMonitor.UpdateSystemMetrics(currentFrameTime, memoryUsage, registeredAgents.Count);
+                performanceMonitor.RecordComponentPerformance("TrainingCoordinator", currentFrameTime);
+            }
         }
 
         private void ProcessAgent(ILearningAgent agent, MonsterType monsterType)
@@ -653,6 +689,97 @@ namespace Vampire.RL
             }
         }
 
+        /// <summary>
+        /// Handle adaptive batch size changes from performance monitor
+        /// </summary>
+        private void OnAdaptiveBatchSizeChanged(int newBatchSize)
+        {
+            adaptiveBatchSize = newBatchSize;
+            
+            // Apply new batch size to all training agents
+            foreach (var kvp in registeredAgents)
+            {
+                var agent = kvp.Key;
+                if (agent != null && agent.IsTraining)
+                {
+                    // Apply batch size to agent if it supports it
+                    if (agent is IAdaptiveBatchAgent adaptiveAgent)
+                    {
+                        adaptiveAgent.SetBatchSize(newBatchSize);
+                    }
+                }
+            }
+            
+            Debug.Log($"[TRAINING] Applied adaptive batch size {newBatchSize} to {registeredAgents.Count} agents");
+        }
+
+        /// <summary>
+        /// Handle performance degradation level changes
+        /// </summary>
+        private void OnPerformanceDegradationChanged(DegradationLevel newLevel)
+        {
+            switch (newLevel)
+            {
+                case DegradationLevel.None:
+                    // Restore normal processing
+                    maxAgentsPerFrame = 10;
+                    updateInterval = 0.1f;
+                    break;
+                case DegradationLevel.Low:
+                    // Slight reduction
+                    maxAgentsPerFrame = 8;
+                    updateInterval = 0.12f;
+                    break;
+                case DegradationLevel.Medium:
+                    // Moderate reduction
+                    maxAgentsPerFrame = 6;
+                    updateInterval = 0.15f;
+                    break;
+                case DegradationLevel.High:
+                    // Significant reduction
+                    maxAgentsPerFrame = 4;
+                    updateInterval = 0.2f;
+                    break;
+                case DegradationLevel.Severe:
+                    // Minimal processing
+                    maxAgentsPerFrame = 2;
+                    updateInterval = 0.3f;
+                    break;
+            }
+            
+            Debug.Log($"[TRAINING] Performance degradation level changed to {newLevel}");
+        }
+
+        /// <summary>
+        /// Estimate current memory usage for all training components
+        /// </summary>
+        private float GetEstimatedMemoryUsageMB()
+        {
+            // Simplified estimation based on agent count and other factors
+            float baseMemory = 10f; // Base system memory
+            float agentMemory = registeredAgents.Count * 2f; // ~2MB per agent
+            float profileMemory = profileManager?.GetStorageSize() ?? 0f;
+            
+            return baseMemory + agentMemory + profileMemory;
+        }
+
+        /// <summary>
+        /// Get current performance metrics from the training coordinator
+        /// </summary>
+        public TrainingPerformanceMetrics GetTrainingPerformanceMetrics()
+        {
+            return new TrainingPerformanceMetrics
+            {
+                currentFrameTime = currentFrameTime,
+                adaptiveBatchSize = adaptiveBatchSize,
+                activeAgentCount = registeredAgents.Count,
+                trainingAgentCount = registeredAgents.Count(kvp => kvp.Key?.IsTraining == true),
+                averageUpdateInterval = updateInterval,
+                maxAgentsPerFrame = maxAgentsPerFrame,
+                performanceScore = performanceScore
+            };
+        }
+
         // Training state data structure for persistence
         [Serializable]
         private class TrainingState
@@ -666,5 +793,29 @@ namespace Vampire.RL
             public Dictionary<MonsterType, LearningMetrics> currentMetrics = new Dictionary<MonsterType, LearningMetrics>();
             public Dictionary<MonsterType, LearningMetrics> metricsAtModeChange = new Dictionary<MonsterType, LearningMetrics>();
         }
+    }
+
+    /// <summary>
+    /// Interface for agents that support adaptive batch sizing
+    /// </summary>
+    public interface IAdaptiveBatchAgent
+    {
+        void SetBatchSize(int batchSize);
+        int GetCurrentBatchSize();
+    }
+
+    /// <summary>
+    /// Training-specific performance metrics
+    /// </summary>
+    [Serializable]
+    public class TrainingPerformanceMetrics
+    {
+        public float currentFrameTime;
+        public int adaptiveBatchSize;
+        public int activeAgentCount;
+        public int trainingAgentCount;
+        public float averageUpdateInterval;
+        public int maxAgentsPerFrame;
+        public float performanceScore;
     }
 }

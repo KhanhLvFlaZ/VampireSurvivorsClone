@@ -7,6 +7,7 @@ namespace Vampire.RL
     /// <summary>
     /// Monitors RL system performance and applies graceful degradation
     /// Implements Requirements 6.2, 6.3 - performance constraints and monitoring
+    /// Enhanced with adaptive batch sizing and comprehensive memory tracking
     /// </summary>
     public class PerformanceMonitor : MonoBehaviour
     {
@@ -20,34 +21,71 @@ namespace Vampire.RL
         [SerializeField] private float monitoringInterval = 1f; // Check every second
         [SerializeField] private int performanceHistorySize = 60; // Keep 60 seconds of history
         [SerializeField] private bool enableAutoDegradation = true;
+        [SerializeField] private bool enableDetailedMemoryTracking = true;
+        
+        [Header("Adaptive Batch Sizing")]
+        [SerializeField] private int baseBatchSize = 32;
+        [SerializeField] private int minBatchSize = 4;
+        [SerializeField] private int maxBatchSize = 128;
+        [SerializeField] private float batchSizeAdjustmentRate = 0.1f;
+        [SerializeField] private bool enableAdaptiveBatchSizing = true;
         
         private Queue<PerformanceSample> performanceHistory;
         private float lastMonitoringTime;
         private DegradationLevel currentDegradationLevel;
         private Dictionary<string, float> componentPerformance;
+        private Dictionary<string, ComponentMemoryUsage> componentMemoryUsage;
         
         // Performance tracking
         private float currentFrameTime;
         private float currentMemoryUsage;
         private int currentActiveAgents;
+        private float averageFrameTime;
+        private float peakMemoryUsage;
+        
+        // Adaptive batch sizing
+        private int currentBatchSize;
+        private float batchSizePerformanceScore;
+        private Queue<float> batchPerformanceHistory;
+        private int batchSizeAdjustmentCooldown;
         
         // Degradation state
         private int originalBatchSize = 32;
         private int originalMaxAgentsPerFrame = 10;
         private float originalUpdateInterval = 0.1f;
         
+        // Memory tracking
+        private long lastGCMemory;
+        private int gcCollectionCount;
+        private float memoryGrowthRate;
+        
         public event Action<DegradationLevel> OnDegradationLevelChanged;
         public event Action<PerformanceAlert> OnPerformanceAlert;
+        public event Action<int> OnBatchSizeChanged;
+        public event Action<MemoryAlert> OnMemoryAlert;
         
         public DegradationLevel CurrentDegradationLevel => currentDegradationLevel;
         public PerformanceMetrics CurrentMetrics => GetCurrentMetrics();
+        public int CurrentBatchSize => currentBatchSize;
+        public float AverageFrameTime => averageFrameTime;
+        public float PeakMemoryUsage => peakMemoryUsage;
 
         void Awake()
         {
             performanceHistory = new Queue<PerformanceSample>();
             componentPerformance = new Dictionary<string, float>();
+            componentMemoryUsage = new Dictionary<string, ComponentMemoryUsage>();
+            batchPerformanceHistory = new Queue<float>();
+            
             currentDegradationLevel = DegradationLevel.None;
+            currentBatchSize = baseBatchSize;
             lastMonitoringTime = Time.time;
+            
+            // Initialize memory tracking
+            lastGCMemory = GC.GetTotalMemory(false);
+            gcCollectionCount = GC.CollectionCount(0);
+            
+            Debug.Log($"PerformanceMonitor initialized - Base batch size: {baseBatchSize}");
         }
 
         void Update()
@@ -100,6 +138,93 @@ namespace Vampire.RL
             currentFrameTime = frameTimeMs;
             currentMemoryUsage = memoryUsageMB;
             currentActiveAgents = activeAgents;
+            
+            // Update running averages
+            float alpha = 0.1f;
+            averageFrameTime = averageFrameTime * (1f - alpha) + frameTimeMs * alpha;
+            
+            // Track peak memory usage
+            if (memoryUsageMB > peakMemoryUsage)
+            {
+                peakMemoryUsage = memoryUsageMB;
+            }
+            
+            // Update adaptive batch sizing
+            if (enableAdaptiveBatchSizing)
+            {
+                UpdateAdaptiveBatchSizing(frameTimeMs);
+            }
+            
+            // Update detailed memory tracking
+            if (enableDetailedMemoryTracking)
+            {
+                UpdateDetailedMemoryTracking();
+            }
+        }
+
+        /// <summary>
+        /// Record memory usage for a specific component
+        /// </summary>
+        public void RecordComponentMemoryUsage(string componentName, long memoryBytes, int objectCount = 0)
+        {
+            try
+            {
+                var usage = new ComponentMemoryUsage
+                {
+                    memoryBytes = memoryBytes,
+                    objectCount = objectCount,
+                    timestamp = DateTime.Now
+                };
+                
+                componentMemoryUsage[componentName] = usage;
+                
+                // Check for memory leaks (rapid growth)
+                if (componentMemoryUsage.ContainsKey(componentName))
+                {
+                    var previousUsage = componentMemoryUsage[componentName];
+                    float memoryGrowthMB = (memoryBytes - previousUsage.memoryBytes) / (1024f * 1024f);
+                    
+                    if (memoryGrowthMB > 10f) // More than 10MB growth
+                    {
+                        var alert = new MemoryAlert
+                        {
+                            timestamp = DateTime.Now,
+                            component = componentName,
+                            currentMemoryMB = memoryBytes / (1024f * 1024f),
+                            growthMB = memoryGrowthMB,
+                            severity = memoryGrowthMB > 50f ? AlertSeverity.Critical : AlertSeverity.Warning
+                        };
+                        
+                        OnMemoryAlert?.Invoke(alert);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.LogError("PerformanceMonitor", "RecordComponentMemoryUsage", ex, componentName);
+            }
+        }
+
+        /// <summary>
+        /// Get optimal batch size based on current performance
+        /// </summary>
+        public int GetOptimalBatchSize()
+        {
+            return currentBatchSize;
+        }
+
+        /// <summary>
+        /// Force batch size adjustment
+        /// </summary>
+        public void SetBatchSize(int newBatchSize)
+        {
+            int clampedSize = Mathf.Clamp(newBatchSize, minBatchSize, maxBatchSize);
+            if (clampedSize != currentBatchSize)
+            {
+                currentBatchSize = clampedSize;
+                OnBatchSizeChanged?.Invoke(currentBatchSize);
+                Debug.Log($"[PERFORMANCE] Batch size manually set to {currentBatchSize}");
+            }
         }
 
         /// <summary>
@@ -350,10 +475,128 @@ namespace Vampire.RL
             );
         }
 
+        private void UpdateAdaptiveBatchSizing(float frameTimeMs)
+        {
+            // Skip adjustment if in cooldown
+            if (batchSizeAdjustmentCooldown > 0)
+            {
+                batchSizeAdjustmentCooldown--;
+                return;
+            }
+            
+            // Calculate performance score (lower is better)
+            float performanceScore = frameTimeMs / maxFrameTimeMs;
+            
+            // Add to history
+            batchPerformanceHistory.Enqueue(performanceScore);
+            if (batchPerformanceHistory.Count > 10) // Keep last 10 samples
+            {
+                batchPerformanceHistory.Dequeue();
+            }
+            
+            // Only adjust if we have enough history
+            if (batchPerformanceHistory.Count < 5) return;
+            
+            // Calculate average performance
+            float avgPerformance = 0f;
+            foreach (float score in batchPerformanceHistory)
+            {
+                avgPerformance += score;
+            }
+            avgPerformance /= batchPerformanceHistory.Count;
+            
+            // Determine if we should adjust batch size
+            int newBatchSize = currentBatchSize;
+            
+            if (avgPerformance > 1.2f) // Performance is poor, reduce batch size
+            {
+                newBatchSize = Mathf.Max(minBatchSize, 
+                    Mathf.RoundToInt(currentBatchSize * (1f - batchSizeAdjustmentRate)));
+            }
+            else if (avgPerformance < 0.6f) // Performance is good, try increasing batch size
+            {
+                newBatchSize = Mathf.Min(maxBatchSize, 
+                    Mathf.RoundToInt(currentBatchSize * (1f + batchSizeAdjustmentRate)));
+            }
+            
+            // Apply change if significant
+            if (Mathf.Abs(newBatchSize - currentBatchSize) >= 2)
+            {
+                currentBatchSize = newBatchSize;
+                batchSizeAdjustmentCooldown = 30; // Wait 30 frames before next adjustment
+                OnBatchSizeChanged?.Invoke(currentBatchSize);
+                
+                Debug.Log($"[ADAPTIVE BATCH] Adjusted batch size to {currentBatchSize} (avg performance: {avgPerformance:F2})");
+            }
+        }
+
+        private void UpdateDetailedMemoryTracking()
+        {
+            try
+            {
+                // Track GC memory
+                long currentGCMemory = GC.GetTotalMemory(false);
+                int currentGCCount = GC.CollectionCount(0);
+                
+                // Calculate memory growth rate
+                float memoryDeltaMB = (currentGCMemory - lastGCMemory) / (1024f * 1024f);
+                memoryGrowthRate = memoryGrowthRate * 0.9f + memoryDeltaMB * 0.1f; // Smooth the rate
+                
+                // Check for excessive GC
+                if (currentGCCount > gcCollectionCount)
+                {
+                    int gcDelta = currentGCCount - gcCollectionCount;
+                    if (gcDelta > 5) // More than 5 GC collections since last check
+                    {
+                        var alert = new MemoryAlert
+                        {
+                            timestamp = DateTime.Now,
+                            component = "GarbageCollector",
+                            currentMemoryMB = currentGCMemory / (1024f * 1024f),
+                            growthMB = memoryDeltaMB,
+                            severity = AlertSeverity.Warning,
+                            additionalInfo = $"Excessive GC activity: {gcDelta} collections"
+                        };
+                        
+                        OnMemoryAlert?.Invoke(alert);
+                    }
+                }
+                
+                // Update tracking variables
+                lastGCMemory = currentGCMemory;
+                gcCollectionCount = currentGCCount;
+                
+                // Check for memory leaks (sustained growth)
+                if (memoryGrowthRate > 1f) // Growing by more than 1MB per monitoring interval
+                {
+                    var alert = new MemoryAlert
+                    {
+                        timestamp = DateTime.Now,
+                        component = "SystemMemory",
+                        currentMemoryMB = currentGCMemory / (1024f * 1024f),
+                        growthMB = memoryGrowthRate,
+                        severity = memoryGrowthRate > 5f ? AlertSeverity.Critical : AlertSeverity.Warning,
+                        additionalInfo = $"Sustained memory growth rate: {memoryGrowthRate:F2} MB/interval"
+                    };
+                    
+                    OnMemoryAlert?.Invoke(alert);
+                }
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.LogError("PerformanceMonitor", "UpdateDetailedMemoryTracking", ex);
+            }
+        }
+
         private void SetRLSystemSettings(int batchSize, int maxAgentsPerFrame, float updateInterval)
         {
-            // This would integrate with the main RL system to apply settings
-            // For now, just log the changes
+            // Update batch size through adaptive system
+            if (enableAdaptiveBatchSizing && batchSize != currentBatchSize)
+            {
+                SetBatchSize(batchSize);
+            }
+            
+            // This would integrate with the main RL system to apply other settings
             Debug.Log($"[PERFORMANCE] Applied settings: BatchSize={batchSize}, MaxAgentsPerFrame={maxAgentsPerFrame}, UpdateInterval={updateInterval:F2}s");
         }
 
@@ -365,7 +608,11 @@ namespace Vampire.RL
                 memoryUsageMB = currentMemoryUsage,
                 activeAgents = currentActiveAgents,
                 degradationLevel = currentDegradationLevel,
-                componentPerformance = new Dictionary<string, float>(componentPerformance)
+                componentPerformance = new Dictionary<string, float>(componentPerformance),
+                currentBatchSize = currentBatchSize,
+                averageFrameTime = averageFrameTime,
+                peakMemoryUsage = peakMemoryUsage,
+                memoryGrowthRate = memoryGrowthRate
             };
         }
     }
@@ -430,5 +677,36 @@ namespace Vampire.RL
         public int activeAgents;
         public DegradationLevel degradationLevel;
         public Dictionary<string, float> componentPerformance;
+        public int currentBatchSize;
+        public float averageFrameTime;
+        public float peakMemoryUsage;
+        public float memoryGrowthRate;
+    }
+
+    /// <summary>
+    /// Component-specific memory usage tracking
+    /// </summary>
+    [Serializable]
+    public class ComponentMemoryUsage
+    {
+        public long memoryBytes;
+        public int objectCount;
+        public DateTime timestamp;
+        
+        public float MemoryMB => memoryBytes / (1024f * 1024f);
+    }
+
+    /// <summary>
+    /// Memory-specific alert for detailed tracking
+    /// </summary>
+    [Serializable]
+    public class MemoryAlert
+    {
+        public DateTime timestamp;
+        public string component;
+        public float currentMemoryMB;
+        public float growthMB;
+        public AlertSeverity severity;
+        public string additionalInfo;
     }
 }

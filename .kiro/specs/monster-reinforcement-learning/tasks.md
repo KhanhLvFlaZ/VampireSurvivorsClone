@@ -167,13 +167,22 @@
   - **Property 12: Coordination learning**
   - **Validates: Requirements 5.2**
 
-- [ ] 11. Integrate with EntityManager and object pooling
+- [x] 11. Integrate with EntityManager and object pooling
+
+
+
+
+
   - Modify EntityManager to support RL monster spawning
   - Implement proper state reset for pooled RL monsters
   - Add RL monster management to existing entity systems
   - _Requirements: 6.1, 6.4_
 
-- [ ] 12. Implement performance optimization and monitoring
+- [x] 12. Implement performance optimization and monitoring
+
+
+
+
   - Add frame time monitoring and processing throttling
   - Implement memory usage tracking and limits
   - Create adaptive batch sizing for training

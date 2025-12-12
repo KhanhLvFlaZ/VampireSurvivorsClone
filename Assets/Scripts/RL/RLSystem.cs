@@ -31,6 +31,7 @@ namespace Vampire.RL
         private Dictionary<MonsterType, ActionSpace> actionSpaces;
         private Dictionary<MonsterType, ILearningAgent> agentTemplates;
         private PerformanceMonitor performanceMonitor;
+        private PerformanceOptimizationManager optimizationManager;
         
         // Performance monitoring
         private float frameStartTime;
@@ -59,7 +60,7 @@ namespace Vampire.RL
             InitializeComponents();
             InitializeActionSpaces();
             InitializeAgentTemplates();
-
+            
             isInitialized = true;
             
             Debug.Log($"RL System initialized with training mode: {defaultTrainingMode}");
@@ -73,6 +74,11 @@ namespace Vampire.RL
                 var monitorGO = new GameObject("PerformanceMonitor");
                 monitorGO.transform.SetParent(transform);
                 performanceMonitor = monitorGO.AddComponent<PerformanceMonitor>();
+                
+                // Initialize performance optimization manager
+                var optimizationGO = new GameObject("PerformanceOptimizationManager");
+                optimizationGO.transform.SetParent(transform);
+                optimizationManager = optimizationGO.AddComponent<PerformanceOptimizationManager>();
                 
                 // Initialize training coordinator
                 var coordinatorGO = new GameObject("TrainingCoordinator");
@@ -123,6 +129,8 @@ namespace Vampire.RL
                 Debug.LogError("[RL CRITICAL] Failed to initialize even fallback components. RL system may not function properly.");
             }
         }
+
+
 
         private void InitializeActionSpaces()
         {
@@ -279,6 +287,26 @@ namespace Vampire.RL
         }
 
         /// <summary>
+        /// Register an agent with the training coordinator
+        /// </summary>
+        public void RegisterAgent(ILearningAgent agent, MonsterType monsterType)
+        {
+            if (!IsEnabled || agent == null) return;
+            
+            trainingCoordinator?.RegisterAgent(agent, monsterType);
+        }
+
+        /// <summary>
+        /// Unregister an agent from the training coordinator
+        /// </summary>
+        public void UnregisterAgent(ILearningAgent agent)
+        {
+            if (agent == null) return;
+            
+            trainingCoordinator?.UnregisterAgent(agent);
+        }
+
+        /// <summary>
         /// Destroy a learning agent
         /// </summary>
         public void DestroyAgent(ILearningAgent agent)
@@ -356,12 +384,47 @@ namespace Vampire.RL
                    GetMemoryUsageMB() <= maxMemoryUsageMB;
         }
 
+        /// <summary>
+        /// Get comprehensive performance report
+        /// </summary>
+        public PerformanceReport GetPerformanceReport()
+        {
+            return optimizationManager?.GetPerformanceReport();
+        }
+
+        /// <summary>
+        /// Force performance optimization
+        /// </summary>
+        public void OptimizePerformance()
+        {
+            optimizationManager?.ForceOptimization();
+        }
+
+        /// <summary>
+        /// Get current performance optimization status
+        /// </summary>
+        public string GetOptimizationStatus()
+        {
+            if (optimizationManager == null) return "Optimization Manager not initialized";
+            
+            var report = optimizationManager.GetPerformanceReport();
+            if (report?.currentSnapshot == null) return "No performance data available";
+            
+            return $"Strategy: {report.optimizationStrategy}, " +
+                   $"Frame Time: {report.currentSnapshot.frameTimeMs:F1}ms, " +
+                   $"Memory: {report.currentSnapshot.memoryUsageMB:F1}MB, " +
+                   $"Batch Size: {report.currentSnapshot.currentBatchSize}, " +
+                   $"Emergency: {(report.emergencyModeActive ? "ACTIVE" : "Inactive")}";
+        }
+
         private float GetMemoryUsageMB()
         {
             // Simplified memory usage calculation
             // In production, use Unity Profiler API for accurate measurement
             return (activeAgentCount * 10f) + (profileManager?.GetStorageSize() ?? 0) / (1024f * 1024f);
         }
+
+
 
         void OnDestroy()
         {

@@ -9,8 +9,9 @@ namespace Vampire.RL
     /// <summary>
     /// Deep Q-Network learning agent implementation
     /// Complete DQN algorithm with experience replay and target network
+    /// Enhanced with adaptive batch sizing for performance optimization
     /// </summary>
-    public class DQNLearningAgent : MonoBehaviour, ILearningAgent
+    public class DQNLearningAgent : MonoBehaviour, ILearningAgent, IAdaptiveBatchAgent
     {
         [Header("Agent Configuration")]
         [SerializeField] private MonsterType monsterType;
@@ -403,6 +404,26 @@ namespace Vampire.RL
         public bool IsReadyToTrain()
         {
             return experienceBuffer.Count >= minExperiencesBeforeTraining;
+        }
+
+        /// <summary>
+        /// Set adaptive batch size for training optimization
+        /// </summary>
+        public void SetBatchSize(int newBatchSize)
+        {
+            if (newBatchSize > 0 && newBatchSize <= experienceBuffer.Count)
+            {
+                batchSize = newBatchSize;
+                Debug.Log($"[{monsterType}] Adaptive batch size set to {batchSize}");
+            }
+        }
+
+        /// <summary>
+        /// Get current batch size
+        /// </summary>
+        public int GetCurrentBatchSize()
+        {
+            return batchSize;
         }
     }
     

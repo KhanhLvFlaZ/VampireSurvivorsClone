@@ -3,6 +3,7 @@ using UnityEngine.Pool;
 using System.Linq;
 using System.Collections;
 using System.Collections.Generic;
+using Vampire.RL;
 
 namespace Vampire
 {
@@ -19,6 +20,10 @@ namespace Vampire
         [Header("Object Pool Settings")]
         [SerializeField] private GameObject monsterPoolParent;
         private MonsterPool[] monsterPools;
+        [Header("RL Monster Settings")]
+        [SerializeField] private bool enableRLMonsters = true;
+        [SerializeField] private RLSystem rlSystem;
+        private Dictionary<int, bool> isRLMonsterPool;
         [SerializeField] private GameObject projectilePoolParent;
         private List<ProjectilePool> projectilePools;
         private Dictionary<GameObject, int> projectileIndexByPrefab;
@@ -83,15 +88,23 @@ namespace Vampire
             magneticCollectables = new FastList<Collectable>();
             chests = new FastList<Chest>();
             
+            // Initialize RL system if not provided
+            if (enableRLMonsters && rlSystem == null)
+            {
+                rlSystem = FindObjectOfType<RLSystem>();
+            }
+            
             // Initialize a monster pool for each monster prefab
             monsterPools = new MonsterPool[levelBlueprint.monsters.Length + 1];
+            isRLMonsterPool = new Dictionary<int, bool>();
+            
             for (int i = 0; i < levelBlueprint.monsters.Length; i++)
             {
-                monsterPools[i] = monsterPoolParent.AddComponent<MonsterPool>();
-                monsterPools[i].Init(this, playerCharacter, levelBlueprint.monsters[i].monstersPrefab);
+                InitializeMonsterPool(i, levelBlueprint.monsters[i].monstersPrefab);
             }
-            monsterPools[monsterPools.Length-1] = monsterPoolParent.AddComponent<MonsterPool>();
-            monsterPools[monsterPools.Length-1].Init(this, playerCharacter, levelBlueprint.finalBoss.bossPrefab);
+            
+            // Initialize boss pool
+            InitializeMonsterPool(monsterPools.Length - 1, levelBlueprint.finalBoss.bossPrefab);
             // Initialize a projectile pool for each ranged projectile type
             projectileIndexByPrefab = new Dictionary<GameObject, int>();
             projectilePools = new List<ProjectilePool>();
@@ -178,6 +191,105 @@ namespace Vampire
         }
 
         ////////////////////////////////////////////////////////////////////////////////
+        /// RL Monster Pool Management
+        ////////////////////////////////////////////////////////////////////////////////
+        
+        /// <summary>
+        /// Initialize a monster pool, choosing between regular and RL pool based on prefab
+        /// </summary>
+        private void InitializeMonsterPool(int poolIndex, GameObject monsterPrefab)
+        {
+            // Check if this prefab has RL components
+            bool isRLMonster = IsRLMonsterPrefab(monsterPrefab);
+            isRLMonsterPool[poolIndex] = isRLMonster;
+            
+            if (isRLMonster && enableRLMonsters)
+            {
+                // Use specialized RL monster pool
+                monsterPools[poolIndex] = monsterPoolParent.AddComponent<RLMonsterPool>();
+                Debug.Log($"Created RL monster pool for: {monsterPrefab.name}");
+            }
+            else
+            {
+                // Use regular monster pool
+                monsterPools[poolIndex] = monsterPoolParent.AddComponent<MonsterPool>();
+                Debug.Log($"Created regular monster pool for: {monsterPrefab.name}");
+            }
+            
+            monsterPools[poolIndex].Init(this, playerCharacter, monsterPrefab);
+        }
+        
+        /// <summary>
+        /// Check if a monster prefab has RL components
+        /// </summary>
+        private bool IsRLMonsterPrefab(GameObject prefab)
+        {
+            if (prefab == null) return false;
+            
+            // Check for RLMonster component
+            var rlMonster = prefab.GetComponent<RLMonster>();
+            if (rlMonster != null) return true;
+            
+            // Check for learning agent components
+            var learningAgent = prefab.GetComponent<ILearningAgent>();
+            if (learningAgent != null) return true;
+            
+            // Check for DQN learning agent specifically
+            var dqnAgent = prefab.GetComponent<DQNLearningAgent>();
+            if (dqnAgent != null) return true;
+            
+            return false;
+        }
+        
+        /// <summary>
+        /// Get RL system reference for monster pools
+        /// </summary>
+        public RLSystem GetRLSystem()
+        {
+            return rlSystem;
+        }
+        
+        /// <summary>
+        /// Enable or disable RL monsters system-wide
+        /// </summary>
+        public void SetRLMonstersEnabled(bool enabled)
+        {
+            enableRLMonsters = enabled;
+            
+            // Update existing RL monsters
+            foreach (Monster monster in livingMonsters.ToList())
+            {
+                if (monster is RLMonster rlMonster)
+                {
+                    rlMonster.SetRLEnabled(enabled);
+                }
+            }
+            
+            Debug.Log($"RL Monsters {(enabled ? "enabled" : "disabled")}");
+        }
+        
+        /// <summary>
+        /// Get statistics for all RL monster pools
+        /// </summary>
+        public Dictionary<int, RLPoolStatistics> GetRLPoolStatistics()
+        {
+            var stats = new Dictionary<int, RLPoolStatistics>();
+            
+            for (int i = 0; i < monsterPools.Length; i++)
+            {
+                if (isRLMonsterPool.ContainsKey(i) && isRLMonsterPool[i])
+                {
+                    if (monsterPools[i] is RLMonsterPool rlPool)
+                    {
+                        stats[i] = rlPool.GetRLStatistics();
+                    }
+                }
+            }
+            
+            return stats;
+        }
+
+        ////////////////////////////////////////////////////////////////////////////////
         /// Monster Spawning
         ////////////////////////////////////////////////////////////////////////////////
         public Monster SpawnMonsterRandomPosition(int monsterPoolIndex, MonsterBlueprint monsterBlueprint, float hpBuff = 0)
@@ -197,7 +309,107 @@ namespace Vampire
             Monster newMonster = monsterPools[monsterPoolIndex].Get();
             newMonster.Setup(monsterPoolIndex, position, monsterBlueprint, hpBuff);
             grid.InsertClient(newMonster);
+            
+            // Additional setup for RL monsters
+            if (newMonster is RLMonster rlMonster && enableRLMonsters)
+            {
+                SetupRLMonster(rlMonster);
+            }
+            
             return newMonster;
+        }
+        
+        /// <summary>
+        /// Spawn an RL monster with specific training configuration
+        /// </summary>
+        public RLMonster SpawnRLMonster(int monsterPoolIndex, Vector2 position, MonsterBlueprint monsterBlueprint, 
+            bool enableTraining = true, float hpBuff = 0)
+        {
+            if (!enableRLMonsters)
+            {
+                Debug.LogWarning("RL monsters are disabled, spawning regular monster instead");
+                return SpawnMonster(monsterPoolIndex, position, monsterBlueprint, hpBuff) as RLMonster;
+            }
+            
+            Monster monster = SpawnMonster(monsterPoolIndex, position, monsterBlueprint, hpBuff);
+            
+            if (monster is RLMonster rlMonster)
+            {
+                // Configure RL-specific settings
+                rlMonster.SetTrainingMode(enableTraining);
+                return rlMonster;
+            }
+            else
+            {
+                Debug.LogWarning($"Monster pool {monsterPoolIndex} does not contain RL monsters");
+                return null;
+            }
+        }
+        
+        /// <summary>
+        /// Setup RL monster with current system configuration
+        /// </summary>
+        private void SetupRLMonster(RLMonster rlMonster)
+        {
+            try
+            {
+                // Ensure RL system is available
+                if (rlSystem == null)
+                {
+                    rlSystem = FindObjectOfType<RLSystem>();
+                }
+                
+                if (rlSystem != null && rlSystem.IsEnabled)
+                {
+                    // Set training mode based on current system state
+                    rlMonster.SetTrainingMode(rlSystem.CurrentTrainingMode == TrainingMode.Training);
+                    
+                    // Register with RL system if not already registered
+                    var learningAgent = rlMonster.GetComponent<ILearningAgent>();
+                    if (learningAgent != null)
+                    {
+                        // Determine monster type (this could be enhanced with better type detection)
+                        MonsterType monsterType = DetermineMonsterTypeFromBlueprint(rlMonster);
+                        rlSystem.RegisterAgent(learningAgent, monsterType);
+                    }
+                }
+                else
+                {
+                    // Fallback to inference mode if RL system is not available
+                    rlMonster.SetRLEnabled(false);
+                    Debug.LogWarning("RL System not available, RL monster will use default behavior");
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"Failed to setup RL monster: {ex.Message}");
+                rlMonster.SetRLEnabled(false);
+            }
+        }
+        
+        /// <summary>
+        /// Determine monster type from monster blueprint or configuration
+        /// </summary>
+        private MonsterType DetermineMonsterTypeFromBlueprint(RLMonster rlMonster)
+        {
+            // This is a simplified approach - in a real implementation, this would
+            // be determined from the monster's blueprint or a dedicated configuration
+            
+            string monsterName = rlMonster.name.ToLower();
+            
+            if (monsterName.Contains("melee") || monsterName.Contains("warrior"))
+                return MonsterType.Melee;
+            else if (monsterName.Contains("ranged") || monsterName.Contains("archer"))
+                return MonsterType.Ranged;
+            else if (monsterName.Contains("boss"))
+                return MonsterType.Boss;
+            else if (monsterName.Contains("throwing"))
+                return MonsterType.Throwing;
+            else if (monsterName.Contains("boomerang"))
+                return MonsterType.Boomerang;
+            
+            // Default to Melee if type cannot be determined
+            return MonsterType.Melee;
         }
 
         public void DespawnMonster(int monsterPoolIndex, Monster monster, bool killedByPlayer = true)
@@ -206,8 +418,34 @@ namespace Vampire
             {
                 statsManager.IncrementMonstersKilled();
             }
+            
+            // Handle RL monster cleanup before despawning
+            if (monster is RLMonster rlMonster && enableRLMonsters)
+            {
+                CleanupRLMonster(rlMonster);
+            }
+            
             grid.RemoveClient(monster);
             monsterPools[monsterPoolIndex].Release(monster);
+        }
+        
+        /// <summary>
+        /// Cleanup RL monster before despawning
+        /// </summary>
+        private void CleanupRLMonster(RLMonster rlMonster)
+        {
+            try
+            {
+                // The actual cleanup is handled by the RLMonsterPool
+                // This method is here for any additional cleanup that might be needed
+                // at the EntityManager level
+                
+                Debug.Log($"Cleaning up RL monster: {rlMonster.name}");
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"Failed to cleanup RL monster: {ex.Message}");
+            }
         }
 
         private Vector2 GetRandomMonsterSpawnPosition()
@@ -456,6 +694,118 @@ namespace Vampire
                 return boomerangPools.Count - 1;
             }
             return boomerangIndexByPrefab[boomerangPrefab];
+        }
+
+        ////////////////////////////////////////////////////////////////////////////////
+        /// RL Monster Management Utilities
+        ////////////////////////////////////////////////////////////////////////////////
+        
+        /// <summary>
+        /// Get all active RL monsters
+        /// </summary>
+        public List<RLMonster> GetActiveRLMonsters()
+        {
+            var rlMonsters = new List<RLMonster>();
+            
+            foreach (Monster monster in livingMonsters)
+            {
+                if (monster is RLMonster rlMonster)
+                {
+                    rlMonsters.Add(rlMonster);
+                }
+            }
+            
+            return rlMonsters;
+        }
+        
+        /// <summary>
+        /// Get count of active RL monsters by type
+        /// </summary>
+        public Dictionary<MonsterType, int> GetRLMonsterCountByType()
+        {
+            var counts = new Dictionary<MonsterType, int>();
+            
+            foreach (var rlMonster in GetActiveRLMonsters())
+            {
+                MonsterType type = DetermineMonsterTypeFromBlueprint(rlMonster);
+                counts[type] = counts.ContainsKey(type) ? counts[type] + 1 : 1;
+            }
+            
+            return counts;
+        }
+        
+        /// <summary>
+        /// Set training mode for all active RL monsters
+        /// </summary>
+        public void SetAllRLMonstersTrainingMode(bool training)
+        {
+            foreach (var rlMonster in GetActiveRLMonsters())
+            {
+                rlMonster.SetTrainingMode(training);
+            }
+            
+            Debug.Log($"Set training mode to {training} for {GetActiveRLMonsters().Count} RL monsters");
+        }
+        
+        /// <summary>
+        /// Get learning metrics for all active RL monsters
+        /// </summary>
+        public Dictionary<MonsterType, List<LearningMetrics>> GetAllRLMonsterMetrics()
+        {
+            var metricsByType = new Dictionary<MonsterType, List<LearningMetrics>>();
+            
+            foreach (var rlMonster in GetActiveRLMonsters())
+            {
+                MonsterType type = DetermineMonsterTypeFromBlueprint(rlMonster);
+                
+                if (!metricsByType.ContainsKey(type))
+                {
+                    metricsByType[type] = new List<LearningMetrics>();
+                }
+                
+                metricsByType[type].Add(rlMonster.GetLearningMetrics());
+            }
+            
+            return metricsByType;
+        }
+        
+        /// <summary>
+        /// Force save all RL monster behavior profiles
+        /// </summary>
+        public void SaveAllRLMonsterProfiles()
+        {
+            if (rlSystem != null)
+            {
+                rlSystem.SaveAllProfiles();
+            }
+            else
+            {
+                Debug.LogWarning("RL System not available for saving profiles");
+            }
+        }
+        
+        /// <summary>
+        /// Get comprehensive RL system status
+        /// </summary>
+        public string GetRLSystemStatus()
+        {
+            if (!enableRLMonsters)
+            {
+                return "RL Monsters: Disabled";
+            }
+            
+            if (rlSystem == null)
+            {
+                return "RL Monsters: Enabled, but RL System not found";
+            }
+            
+            var activeRLMonsters = GetActiveRLMonsters();
+            var poolStats = GetRLPoolStatistics();
+            
+            return $"RL System: {(rlSystem.IsEnabled ? "Active" : "Inactive")}, " +
+                   $"Mode: {rlSystem.CurrentTrainingMode}, " +
+                   $"Active RL Monsters: {activeRLMonsters.Count}, " +
+                   $"RL Pools: {poolStats.Count}";
         }
     }
 }
