@@ -361,7 +361,6 @@ namespace Vampire
             currentState = GameStateBuilder.BuildGameState(
                 this, 
                 playerCharacter, 
-                entityManager,
                 maxNearbyMonsters: 5,
                 maxNearbyCollectibles: 10,
                 searchRadius: 15f

@@ -1,5 +1,6 @@
 using UnityEngine;
 using System;
+using Vampire;
 
 namespace Vampire.RL
 {
@@ -11,9 +12,8 @@ namespace Vampire.RL
         /// <summary>
         /// Initialize the training coordinator
         /// </summary>
-        /// <param name="entityManager">Reference to entity manager</param>
         /// <param name="playerCharacter">Reference to player character</param>
-        void Initialize(EntityManager entityManager, Character playerCharacter);
+        void Initialize(MonoBehaviour playerCharacter);
 
         /// <summary>
         /// Set the current training mode

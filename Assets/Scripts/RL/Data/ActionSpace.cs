@@ -29,6 +29,11 @@ namespace Vampire.RL
         [Header("Action Constraints")]
         public float minActionInterval = 0.1f; // Minimum time between actions
         public float maxActionRange = 5f; // Maximum range for actions
+        
+        /// <summary>
+        /// Total number of actions in this action space
+        /// </summary>
+        public int actionCount => GetTotalActionCount();
 
         /// <summary>
         /// Get all available actions for this action space

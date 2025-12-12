@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.IO;
+using Vampire;
 
 namespace Vampire.RL
 {
@@ -29,9 +30,10 @@ namespace Vampire.RL
         [SerializeField] private string stateFileName = "training_state.json";
         
         // Core components
-        private EntityManager entityManager;
-        private Character playerCharacter;
+        private MonoBehaviour playerCharacter;
         private IBehaviorProfileManager profileManager;
+        private MonsterCoordinationSystem coordinationSystem;
+        private MultiAgentLearningManager multiAgentManager;
         
         // Agent management
         private Dictionary<ILearningAgent, MonsterType> registeredAgents;
@@ -56,9 +58,8 @@ namespace Vampire.RL
         public bool IsTrainingActive => currentMode == TrainingMode.Training || currentMode == TrainingMode.Mixed;
         public float CurrentFrameTime => currentFrameTime;
 
-        public void Initialize(EntityManager entityManager, Character playerCharacter)
+        public void Initialize(MonoBehaviour playerCharacter)
         {
-            this.entityManager = entityManager;
             this.playerCharacter = playerCharacter;
             
             // Initialize collections
@@ -69,6 +70,16 @@ namespace Vampire.RL
             // Initialize behavior profile manager
             this.profileManager = new BehaviorProfileManager();
             this.profileManager.Initialize("default"); // TODO: Get actual player ID
+            
+            // Initialize coordination system
+            var coordinationGO = new GameObject("CoordinationSystem");
+            coordinationGO.transform.SetParent(transform);
+            this.coordinationSystem = coordinationGO.AddComponent<MonsterCoordinationSystem>();
+            
+            // Initialize multi-agent learning manager
+            var multiAgentGO = new GameObject("MultiAgentLearningManager");
+            multiAgentGO.transform.SetParent(transform);
+            this.multiAgentManager = multiAgentGO.AddComponent<MultiAgentLearningManager>();
             
             // Initialize state preservation
             InitializeStatePreservation();
@@ -203,6 +214,10 @@ namespace Vampire.RL
             }
             agentsByType[monsterType].Add(agent);
             
+            // Register with coordination system and multi-agent manager
+            coordinationSystem?.RegisterAgent(agent, monsterType);
+            multiAgentManager?.RegisterAgent(agent, monsterType);
+            
             // Set initial training mode
             agent.IsTraining = ShouldAgentTrain(monsterType);
             
@@ -256,6 +271,10 @@ namespace Vampire.RL
                     agentsByType.Remove(monsterType);
                 }
             }
+            
+            // Unregister from coordination system and multi-agent manager
+            coordinationSystem?.UnregisterAgent(agent);
+            multiAgentManager?.UnregisterAgent(agent, monsterType);
             
             // Update training state
             if (enableStatePreservation)

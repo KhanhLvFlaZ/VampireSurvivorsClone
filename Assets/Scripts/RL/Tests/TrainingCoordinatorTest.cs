@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System;
+using Vampire;
 
 namespace Vampire.RL.Tests
 {
@@ -88,7 +89,7 @@ namespace Vampire.RL.Tests
             mockAgent2 = new MockLearningAgent();
             
             // Initialize coordinator
-            coordinator.Initialize(mockEntityManager, mockPlayer);
+            coordinator.Initialize(mockPlayer);
         }
 
         void TearDown()
@@ -352,14 +353,16 @@ namespace Vampire.RL.Tests
         }
 
         // Mock classes for testing
-        private class MockEntityManager : EntityManager
+        private class MockEntityManager : MonoBehaviour
         {
-            // Minimal implementation for testing
+            // Minimal implementation for testing - using MonoBehaviour instead of EntityManager
+            // to avoid complex dependencies
         }
 
-        private class MockCharacter : Character
+        private class MockCharacter : MonoBehaviour
         {
-            // Minimal implementation for testing
+            // Minimal implementation for testing - using MonoBehaviour instead of Character
+            // to avoid complex dependencies
         }
 
         private class MockLearningAgent : ILearningAgent

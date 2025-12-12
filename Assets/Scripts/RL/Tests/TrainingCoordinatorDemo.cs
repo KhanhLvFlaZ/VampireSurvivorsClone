@@ -1,6 +1,7 @@
 using UnityEngine;
 using System.Collections;
 using System.Collections.Generic;
+using Vampire;
 
 namespace Vampire.RL.Tests
 {
@@ -69,7 +70,7 @@ namespace Vampire.RL.Tests
             var mockPlayer = new GameObject("MockPlayer").AddComponent<MockCharacter>();
             
             // Initialize
-            coordinator.Initialize(mockEntityManager, mockPlayer);
+            coordinator.Initialize(mockPlayer);
             
             // Subscribe to events
             coordinator.OnTrainingModeChanged += OnTrainingModeChanged;
@@ -245,14 +246,16 @@ namespace Vampire.RL.Tests
         }
 
         // Mock classes for demo
-        public class MockEntityManager : EntityManager
+        public class MockEntityManager : MonoBehaviour
         {
-            // Minimal implementation for demo
+            // Minimal implementation for demo - using MonoBehaviour instead of EntityManager
+            // to avoid complex dependencies
         }
 
-        public class MockCharacter : Character
+        public class MockCharacter : MonoBehaviour
         {
-            // Minimal implementation for demo
+            // Minimal implementation for demo - using MonoBehaviour instead of Character
+            // to avoid complex dependencies
         }
 
         public class DemoLearningAgent : MonoBehaviour, ILearningAgent

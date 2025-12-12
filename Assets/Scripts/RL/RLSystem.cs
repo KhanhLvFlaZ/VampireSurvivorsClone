@@ -1,6 +1,7 @@
 using UnityEngine;
 using System;
 using System.Collections.Generic;
+using Vampire;
 
 namespace Vampire.RL
 {
@@ -22,8 +23,7 @@ namespace Vampire.RL
         [SerializeField] private LearningAlgorithm defaultAlgorithm = LearningAlgorithm.DQN;
         
         [Header("Dependencies")]
-        [SerializeField] private EntityManager entityManager;
-        [SerializeField] private Character playerCharacter;
+        [SerializeField] private MonoBehaviour playerCharacter;
 
         // Core RL components
         private ITrainingCoordinator trainingCoordinator;
@@ -49,11 +49,10 @@ namespace Vampire.RL
         /// <summary>
         /// Initialize the RL system
         /// </summary>
-        public void Initialize(EntityManager entityManager, Character playerCharacter, string playerProfileId = null)
+        public void Initialize(MonoBehaviour playerCharacter, string playerProfileId = null)
         {
             if (isInitialized) return;
 
-            this.entityManager = entityManager;
             this.playerCharacter = playerCharacter;
             this.currentPlayerProfileId = playerProfileId ?? "default";
 
@@ -79,7 +78,7 @@ namespace Vampire.RL
                 var coordinatorGO = new GameObject("TrainingCoordinator");
                 coordinatorGO.transform.SetParent(transform);
                 trainingCoordinator = coordinatorGO.AddComponent<TrainingCoordinator>();
-                trainingCoordinator.Initialize(entityManager, playerCharacter);
+                trainingCoordinator.Initialize(playerCharacter);
                 trainingCoordinator.SetTrainingMode(defaultTrainingMode);
 
                 // Initialize profile manager
