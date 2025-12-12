@@ -46,7 +46,12 @@
   - **Property 5: Configuration flexibility**
   - **Validates: Requirements 2.2, 2.3**
 
-- [ ] 4. Create RewardCalculator system
+- [x] 4. Create RewardCalculator system
+
+
+
+
+
   - Implement reward calculation logic for different monster actions
   - Create configurable reward functions through ScriptableObjects
   - Add reward shaping for better learning convergence
