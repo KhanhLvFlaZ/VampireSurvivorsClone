@@ -82,14 +82,16 @@ namespace Vampire.RL
 
         private void InitializeActionSpaces()
         {
-            actionSpaces = new Dictionary<MonsterType, ActionSpace>
+            actionSpaces = new Dictionary<MonsterType, ActionSpace>();
+            
+            // Initialize action spaces using MonsterRLConfig
+            foreach (MonsterType monsterType in System.Enum.GetValues(typeof(MonsterType)))
             {
-                { MonsterType.Melee, ActionSpace.CreateDefault() },
-                { MonsterType.Ranged, CreateRangedActionSpace() },
-                { MonsterType.Throwing, CreateThrowingActionSpace() },
-                { MonsterType.Boomerang, CreateBoomerangActionSpace() },
-                { MonsterType.Boss, ActionSpace.CreateAdvanced() }
-            };
+                if (monsterType == MonsterType.None) continue;
+                
+                var config = MonsterRLConfig.CreateDefault(monsterType);
+                actionSpaces[monsterType] = config.actionSpace;
+            }
         }
 
         private void InitializeAgentTemplates()
@@ -111,30 +113,23 @@ namespace Vampire.RL
             }
         }
 
-        private ActionSpace CreateRangedActionSpace()
+        /// <summary>
+        /// Create ActionDecoder for a specific monster type
+        /// </summary>
+        public IActionDecoder CreateActionDecoder(MonsterType monsterType)
         {
-            var actionSpace = ActionSpace.CreateDefault();
-            actionSpace.canSpecialAttack = true; // Ranged monsters can use special attacks
-            actionSpace.maxActionRange = 8f; // Longer range for ranged monsters
-            return actionSpace;
+            if (!IsEnabled || !actionSpaces.ContainsKey(monsterType))
+                return null;
+                
+            return ActionDecoderFactory.CreateDecoder(monsterType, actionSpaces[monsterType]);
         }
 
-        private ActionSpace CreateThrowingActionSpace()
+        /// <summary>
+        /// Get MonsterRLConfig for a specific monster type
+        /// </summary>
+        public MonsterRLConfig GetMonsterConfig(MonsterType monsterType)
         {
-            var actionSpace = ActionSpace.CreateDefault();
-            actionSpace.canSpecialAttack = true;
-            actionSpace.canAmbush = true; // Throwing monsters can ambush
-            actionSpace.maxActionRange = 6f;
-            return actionSpace;
-        }
-
-        private ActionSpace CreateBoomerangActionSpace()
-        {
-            var actionSpace = ActionSpace.CreateDefault();
-            actionSpace.canSpecialAttack = true;
-            actionSpace.canCoordinate = true; // Boomerang monsters can coordinate
-            actionSpace.maxActionRange = 7f;
-            return actionSpace;
+            return MonsterRLConfig.CreateDefault(monsterType);
         }
 
         void Update()
