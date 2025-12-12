@@ -74,9 +74,7 @@ namespace Vampire.RL
             trainingCoordinator.SetTrainingMode(defaultTrainingMode);
 
             // Initialize profile manager
-            var profileManagerGO = new GameObject("BehaviorProfileManager");
-            profileManagerGO.transform.SetParent(transform);
-            profileManager = profileManagerGO.AddComponent<BehaviorProfileManager>();
+            profileManager = new BehaviorProfileManager();
             profileManager.Initialize(currentPlayerProfileId);
         }
 
