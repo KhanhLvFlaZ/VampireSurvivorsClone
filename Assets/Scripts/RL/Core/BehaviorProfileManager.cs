@@ -52,7 +52,8 @@ namespace Vampire.RL
         {
             if (profile == null || !profile.IsValid())
             {
-                Debug.LogError("Cannot save invalid behavior profile");
+                ErrorHandler.LogError("BehaviorProfileManager", "SaveProfile", 
+                    new ArgumentException("Cannot save invalid behavior profile"), profile?.monsterType.ToString());
                 return false;
             }
 
@@ -99,7 +100,7 @@ namespace Vampire.RL
             }
             catch (Exception ex)
             {
-                Debug.LogError($"Failed to save behavior profile: {ex.Message}");
+                ErrorHandler.LogError("BehaviorProfileManager", "SaveProfile", ex, $"MonsterType: {profile?.monsterType}, Player: {currentPlayerProfileId}");
                 return false;
             }
         }
@@ -132,8 +133,8 @@ namespace Vampire.RL
                 // Validate checksum
                 if (!ValidateChecksum(profileData.profileJson, profileData.checksum))
                 {
-                    Debug.LogError($"Corrupted behavior profile detected for {monsterType}. Checksum mismatch.");
-                    return null;
+                    var checksumException = new InvalidDataException($"Corrupted behavior profile detected for {monsterType}. Checksum mismatch.");
+                    return ErrorHandler.RecoverCorruptedProfile(monsterType, filePath, checksumException);
                 }
 
                 var profile = JsonUtility.FromJson<BehaviorProfile>(profileData.profileJson);
@@ -147,8 +148,8 @@ namespace Vampire.RL
                 // Validate profile
                 if (!ValidateProfile(profile))
                 {
-                    Debug.LogError($"Invalid behavior profile loaded for {monsterType}");
-                    return null;
+                    var validationException = new InvalidDataException($"Invalid behavior profile loaded for {monsterType}");
+                    return ErrorHandler.RecoverCorruptedProfile(monsterType, filePath, validationException);
                 }
 
                 // Cache the loaded profile
@@ -159,8 +160,8 @@ namespace Vampire.RL
             }
             catch (Exception ex)
             {
-                Debug.LogError($"Failed to load behavior profile for {monsterType}: {ex.Message}");
-                return null;
+                ErrorHandler.LogError("BehaviorProfileManager", "LoadProfile", ex, $"MonsterType: {monsterType}, Player: {targetPlayerId}");
+                return ErrorHandler.RecoverCorruptedProfile(monsterType, GetProfileFileName(monsterType, targetPlayerId), ex);
             }
         }
 

@@ -1,6 +1,8 @@
 using UnityEngine;
 using System.Collections.Generic;
 using System.Linq;
+using System;
+using System.IO;
 
 namespace Vampire.RL
 {
@@ -41,54 +43,101 @@ namespace Vampire.RL
 
         public void Initialize(MonsterType monsterType, ActionSpace actionSpace)
         {
-            this.monsterType = monsterType;
-            this.actionSpace = actionSpace;
-            this.metrics = LearningMetrics.CreateDefault();
-            this.metrics.explorationRate = initialEpsilon;
-            this.metrics.learningRate = learningRate;
-            
-            // Initialize experience replay buffer
-            this.experienceBuffer = new ExperienceReplayBuffer(BUFFER_SIZE);
+            try
+            {
+                this.monsterType = monsterType;
+                this.actionSpace = actionSpace;
+                this.metrics = LearningMetrics.CreateDefault();
+                this.metrics.explorationRate = initialEpsilon;
+                this.metrics.learningRate = learningRate;
+                
+                // Initialize experience replay buffer
+                this.experienceBuffer = new ExperienceReplayBuffer(BUFFER_SIZE);
 
-            // Initialize main and target networks
-            int inputSize = 32; // From design document
-            int outputSize = actionSpace.GetTotalActionCount();
-            int[] hiddenLayers = new int[] { 128, 64, 32 }; // Deeper network for better learning
-            
-            mainNetwork = new SimpleNeuralNetwork();
-            mainNetwork.Initialize(inputSize, outputSize, hiddenLayers, NetworkArchitecture.Simple);
-            
-            targetNetwork = new SimpleNeuralNetwork();
-            targetNetwork.Initialize(inputSize, outputSize, hiddenLayers, NetworkArchitecture.Simple);
-            
-            // Copy initial weights to target network
-            targetNetwork.CopyWeightsFrom(mainNetwork);
-            
-            Debug.Log($"DQN Agent initialized for {monsterType} with {outputSize} actions, {mainNetwork.GetParameterCount()} parameters");
+                // Initialize main and target networks
+                int inputSize = 32; // From design document
+                int outputSize = actionSpace.GetTotalActionCount();
+                int[] hiddenLayers = new int[] { 128, 64, 32 }; // Deeper network for better learning
+                
+                try
+                {
+                    mainNetwork = new SimpleNeuralNetwork();
+                    mainNetwork.Initialize(inputSize, outputSize, hiddenLayers, NetworkArchitecture.Simple);
+                    
+                    targetNetwork = new SimpleNeuralNetwork();
+                    targetNetwork.Initialize(inputSize, outputSize, hiddenLayers, NetworkArchitecture.Simple);
+                    
+                    // Copy initial weights to target network
+                    targetNetwork.CopyWeightsFrom(mainNetwork);
+                }
+                catch (Exception networkEx)
+                {
+                    ErrorHandler.LogError("DQNLearningAgent", "InitializeNetworks", networkEx, $"MonsterType: {monsterType}");
+                    
+                    // Try to recover with fallback network
+                    mainNetwork = ErrorHandler.RecoverFailedNetwork(NetworkArchitecture.Simple, inputSize, outputSize, hiddenLayers, networkEx);
+                    targetNetwork = ErrorHandler.RecoverFailedNetwork(NetworkArchitecture.Simple, inputSize, outputSize, hiddenLayers, networkEx);
+                    
+                    if (mainNetwork == null || targetNetwork == null)
+                    {
+                        throw new InvalidOperationException($"Failed to initialize networks for {monsterType}, including fallback options");
+                    }
+                }
+                
+                Debug.Log($"DQN Agent initialized for {monsterType} with {outputSize} actions, {mainNetwork.GetParameterCount()} parameters");
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.LogError("DQNLearningAgent", "Initialize", ex, $"MonsterType: {monsterType}");
+                throw; // Re-throw to let caller handle with fallback agent
+            }
         }
 
         public int SelectAction(RLGameState state, bool isTraining)
         {
-            if (mainNetwork == null) return 0;
+            try
+            {
+                if (mainNetwork == null) 
+                {
+                    ErrorHandler.LogError("DQNLearningAgent", "SelectAction", 
+                        new InvalidOperationException("Main network is null"), $"MonsterType: {monsterType}");
+                    return 0;
+                }
 
-            // Encode state
-            float[] encodedState = EncodeState(state);
-            
-            // Get Q-values from main network
-            float[] qValues = mainNetwork.Forward(encodedState);
-            
-            // Epsilon-greedy action selection
-            if (isTraining && Random.Range(0f, 1f) < metrics.explorationRate)
-            {
-                // Random action (exploration)
-                int randomAction = Random.Range(0, qValues.Length);
-                return randomAction;
+                // Encode state
+                float[] encodedState = EncodeState(state);
+                
+                // Get Q-values from main network
+                float[] qValues = mainNetwork.Forward(encodedState);
+                
+                // Validate Q-values
+                if (qValues == null || qValues.Length == 0)
+                {
+                    ErrorHandler.LogError("DQNLearningAgent", "SelectAction", 
+                        new InvalidOperationException("Network returned invalid Q-values"), $"MonsterType: {monsterType}");
+                    return 0;
+                }
+                
+                // Epsilon-greedy action selection
+                if (isTraining && UnityEngine.Random.Range(0f, 1f) < metrics.explorationRate)
+                {
+                    // Random action (exploration)
+                    int randomAction = UnityEngine.Random.Range(0, qValues.Length);
+                    return randomAction;
+                }
+                else
+                {
+                    // Best action (exploitation)
+                    int bestAction = GetBestAction(qValues);
+                    return bestAction;
+                }
             }
-            else
+            catch (Exception ex)
             {
-                // Best action (exploitation)
-                int bestAction = GetBestAction(qValues);
-                return bestAction;
+                ErrorHandler.LogError("DQNLearningAgent", "SelectAction", ex, $"MonsterType: {monsterType}");
+                
+                // Return safe default action
+                return 0;
             }
         }
         
@@ -238,16 +287,61 @@ namespace Vampire.RL
                             mainNetwork.SetBiases(profile.networkBiases);
                         
                         // Also update target network
-                        targetNetwork.CopyWeightsFrom(mainNetwork);
+                        targetNetwork?.CopyWeightsFrom(mainNetwork);
                     }
                     
                     metrics = profile.metrics;
                     Debug.Log($"DQN Behavior profile loaded for {monsterType} from {filePath}");
                 }
+                else
+                {
+                    var invalidProfileException = new InvalidDataException($"Invalid or corrupted behavior profile at {filePath}");
+                    var recoveredProfile = ErrorHandler.RecoverCorruptedProfile(monsterType, filePath, invalidProfileException);
+                    
+                    if (recoveredProfile != null && recoveredProfile.IsValid())
+                    {
+                        // Try to load the recovered profile
+                        if (mainNetwork != null && recoveredProfile.networkWeights != null)
+                        {
+                            mainNetwork.SetWeights(recoveredProfile.networkWeights);
+                            if (recoveredProfile.networkBiases != null)
+                                mainNetwork.SetBiases(recoveredProfile.networkBiases);
+                            
+                            targetNetwork?.CopyWeightsFrom(mainNetwork);
+                        }
+                        
+                        metrics = recoveredProfile.metrics;
+                        Debug.Log($"DQN Recovered behavior profile loaded for {monsterType}");
+                    }
+                }
             }
-            catch (System.Exception e)
+            catch (System.Exception ex)
             {
-                Debug.LogError($"Failed to load DQN behavior profile: {e.Message}");
+                ErrorHandler.LogError("DQNLearningAgent", "LoadBehaviorProfile", ex, $"MonsterType: {monsterType}, Path: {filePath}");
+                
+                // Try to recover from corruption
+                var recoveredProfile = ErrorHandler.RecoverCorruptedProfile(monsterType, filePath, ex);
+                if (recoveredProfile != null)
+                {
+                    try
+                    {
+                        if (mainNetwork != null && recoveredProfile.networkWeights != null)
+                        {
+                            mainNetwork.SetWeights(recoveredProfile.networkWeights);
+                            if (recoveredProfile.networkBiases != null)
+                                mainNetwork.SetBiases(recoveredProfile.networkBiases);
+                            
+                            targetNetwork?.CopyWeightsFrom(mainNetwork);
+                        }
+                        
+                        metrics = recoveredProfile.metrics;
+                        Debug.Log($"DQN Successfully recovered behavior profile for {monsterType}");
+                    }
+                    catch (Exception recoveryEx)
+                    {
+                        ErrorHandler.LogError("DQNLearningAgent", "LoadRecoveredProfile", recoveryEx, $"MonsterType: {monsterType}");
+                    }
+                }
             }
         }
 
@@ -351,7 +445,7 @@ namespace Vampire.RL
                 int randomIndex;
                 do
                 {
-                    randomIndex = Random.Range(0, size);
+                    randomIndex = UnityEngine.Random.Range(0, size);
                 } while (usedIndices.Contains(randomIndex));
                 
                 usedIndices.Add(randomIndex);

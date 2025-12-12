@@ -1,4 +1,5 @@
 using UnityEngine;
+using System;
 using System.Collections.Generic;
 
 namespace Vampire.RL
@@ -29,6 +30,7 @@ namespace Vampire.RL
         private IBehaviorProfileManager profileManager;
         private Dictionary<MonsterType, ActionSpace> actionSpaces;
         private Dictionary<MonsterType, ILearningAgent> agentTemplates;
+        private PerformanceMonitor performanceMonitor;
         
         // Performance monitoring
         private float frameStartTime;
@@ -66,16 +68,61 @@ namespace Vampire.RL
 
         private void InitializeComponents()
         {
-            // Initialize training coordinator
-            var coordinatorGO = new GameObject("TrainingCoordinator");
-            coordinatorGO.transform.SetParent(transform);
-            trainingCoordinator = coordinatorGO.AddComponent<TrainingCoordinator>();
-            trainingCoordinator.Initialize(entityManager, playerCharacter);
-            trainingCoordinator.SetTrainingMode(defaultTrainingMode);
+            try
+            {
+                // Initialize performance monitor first
+                var monitorGO = new GameObject("PerformanceMonitor");
+                monitorGO.transform.SetParent(transform);
+                performanceMonitor = monitorGO.AddComponent<PerformanceMonitor>();
+                
+                // Initialize training coordinator
+                var coordinatorGO = new GameObject("TrainingCoordinator");
+                coordinatorGO.transform.SetParent(transform);
+                trainingCoordinator = coordinatorGO.AddComponent<TrainingCoordinator>();
+                trainingCoordinator.Initialize(entityManager, playerCharacter);
+                trainingCoordinator.SetTrainingMode(defaultTrainingMode);
 
-            // Initialize profile manager
-            profileManager = new BehaviorProfileManager();
-            profileManager.Initialize(currentPlayerProfileId);
+                // Initialize profile manager
+                profileManager = new BehaviorProfileManager();
+                profileManager.Initialize(currentPlayerProfileId);
+                
+                Debug.Log("RL System components initialized successfully");
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.LogError("RLSystem", "InitializeComponents", ex);
+                
+                // Try to continue with fallback components
+                InitializeFallbackComponents();
+            }
+        }
+        
+        private void InitializeFallbackComponents()
+        {
+            try
+            {
+                Debug.LogWarning("[RL FALLBACK] Initializing fallback components due to initialization failure");
+                
+                // Create minimal profile manager
+                if (profileManager == null)
+                {
+                    profileManager = new BehaviorProfileManager();
+                    profileManager.Initialize(currentPlayerProfileId ?? "fallback");
+                }
+                
+                // Performance monitor is optional for fallback mode
+                if (performanceMonitor == null)
+                {
+                    Debug.LogWarning("[RL FALLBACK] Performance monitoring disabled");
+                }
+                
+                Debug.Log("[RL FALLBACK] Fallback components initialized");
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.LogError("RLSystem", "InitializeFallbackComponents", ex);
+                Debug.LogError("[RL CRITICAL] Failed to initialize even fallback components. RL system may not function properly.");
+            }
         }
 
         private void InitializeActionSpaces()
@@ -136,16 +183,32 @@ namespace Vampire.RL
 
             frameStartTime = Time.realtimeSinceStartup;
             
-            // Update training coordinator
-            trainingCoordinator?.UpdateAgents();
+            try
+            {
+                // Update training coordinator
+                trainingCoordinator?.UpdateAgents();
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.LogError("RLSystem", "UpdateAgents", ex);
+            }
             
             // Monitor performance
             totalRLProcessingTime = (Time.realtimeSinceStartup - frameStartTime) * 1000f; // Convert to ms
             
-            // Check performance constraints
+            // Update performance monitor
+            if (performanceMonitor != null)
+            {
+                float memoryUsage = GetMemoryUsageMB();
+                performanceMonitor.UpdateSystemMetrics(totalRLProcessingTime, memoryUsage, activeAgentCount);
+                performanceMonitor.RecordComponentPerformance("RLSystem", totalRLProcessingTime);
+            }
+            
+            // Check performance constraints and apply degradation if needed
             if (totalRLProcessingTime > maxFrameTimeMs)
             {
-                Debug.LogWarning($"RL processing exceeded frame time limit: {totalRLProcessingTime:F2}ms > {maxFrameTimeMs}ms");
+                ErrorHandler.LogPerformanceIssue("RLSystem", "FrameTime", totalRLProcessingTime, maxFrameTimeMs, 
+                    "Consider reducing batch size or limiting agents per frame");
             }
         }
 
@@ -154,27 +217,66 @@ namespace Vampire.RL
         /// </summary>
         public ILearningAgent CreateAgentForMonster(MonsterType monsterType)
         {
-            if (!IsEnabled || !agentTemplates.ContainsKey(monsterType))
+            if (!IsEnabled || !actionSpaces.ContainsKey(monsterType))
                 return null;
 
-            var templateAgent = agentTemplates[monsterType];
-            var agentGO = new GameObject($"LearningAgent_{monsterType}_{System.Guid.NewGuid()}");
-            
-            var newAgent = agentGO.AddComponent<DQNLearningAgent>();
-            newAgent.Initialize(monsterType, actionSpaces[monsterType]);
-            
-            // Load existing behavior profile if available
-            var profile = profileManager.LoadProfile(monsterType);
-            if (profile != null && profile.IsValid())
+            try
             {
-                newAgent.LoadBehaviorProfile(GetProfilePath(profile));
+                // Check if we should disable this component due to repeated failures
+                if (ErrorHandler.ShouldDisableComponent($"Agent_{monsterType}"))
+                {
+                    Debug.LogWarning($"[RL FALLBACK] Agent creation disabled for {monsterType} due to repeated failures. Using fallback agent.");
+                    return CreateFallbackAgent(monsterType);
+                }
+
+                var agentGO = new GameObject($"LearningAgent_{monsterType}_{System.Guid.NewGuid()}");
+                
+                var newAgent = agentGO.AddComponent<DQNLearningAgent>();
+                newAgent.Initialize(monsterType, actionSpaces[monsterType]);
+                
+                // Load existing behavior profile if available
+                var profile = profileManager?.LoadProfile(monsterType);
+                if (profile != null && profile.IsValid())
+                {
+                    newAgent.LoadBehaviorProfile(GetProfilePath(profile));
+                }
+
+                // Register with training coordinator
+                trainingCoordinator?.RegisterAgent(newAgent, monsterType);
+                activeAgentCount++;
+
+                // Reset error count on successful creation
+                ErrorHandler.ResetComponentErrors($"Agent_{monsterType}");
+
+                return newAgent;
             }
-
-            // Register with training coordinator
-            trainingCoordinator.RegisterAgent(newAgent, monsterType);
-            activeAgentCount++;
-
-            return newAgent;
+            catch (Exception ex)
+            {
+                ErrorHandler.LogError("RLSystem", "CreateAgentForMonster", ex, monsterType.ToString());
+                
+                // Try to recover with fallback agent
+                return ErrorHandler.RecoverFailedAgent(monsterType, actionSpaces[monsterType], ex) ?? CreateFallbackAgent(monsterType);
+            }
+        }
+        
+        private ILearningAgent CreateFallbackAgent(MonsterType monsterType)
+        {
+            try
+            {
+                var fallbackGO = new GameObject($"FallbackAgent_{monsterType}_{System.Guid.NewGuid()}");
+                var fallbackAgent = fallbackGO.AddComponent<FallbackLearningAgent>();
+                fallbackAgent.Initialize(monsterType, actionSpaces[monsterType]);
+                
+                activeAgentCount++;
+                Debug.Log($"[RL FALLBACK] Created fallback agent for {monsterType}");
+                
+                return fallbackAgent;
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.LogError("RLSystem", "CreateFallbackAgent", ex, monsterType.ToString());
+                return null; // Caller should handle with default scripted behavior
+            }
         }
 
         /// <summary>
