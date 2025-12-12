@@ -59,6 +59,7 @@ namespace Vampire
         public UnityEvent OnDeath { get; } = new UnityEvent();
         public CharacterBlueprint Blueprint { get => characterBlueprint; }
         public Vector2 Velocity { get => rb.velocity; }
+        public float HP => currentHealth;
         // Spatial Hash Grid Client Interface
         public Vector2 Position => transform.position;
         public Vector2 Size => meleeHitboxCollider.bounds.size;
